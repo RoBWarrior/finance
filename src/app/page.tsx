@@ -1,65 +1,137 @@
-import Image from "next/image";
+// app/page.tsx
+'use client';
+
+import { useState } from 'react';
+import { useDashboardStore } from '../../store/useDashboardStore';
+import DashboardGrid from '../../components/DashboardGrid';
+import AddWidgetModal from '../../components/AddWidgetModal';
+import Header from '../../components/Header';
 
 export default function Home() {
+  const { theme, setTheme, editMode, setEditMode, exportConfig, importConfig, clearDashboard } = useDashboardStore();
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+
+  const handleExport = () => {
+    const config = exportConfig();
+    const blob = new Blob([config], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `finboard-config-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImport = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json';
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const config = e.target?.result as string;
+            importConfig(config);
+            alert('Configuration imported successfully!');
+          } catch (error) {
+            alert('Failed to import configuration');
+          }
+        };
+        reader.readAsText(file);
+      }
+    };
+    input.click();
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className={`min-h-screen ${theme === 'dark' ? 'dark bg-gray-900 text-white' : 'bg-gray-50'}`}>
+      <Header />
+      
+      <div className="container mx-auto px-4 py-6">
+        {/* Toolbar */}
+        <div className="flex flex-wrap gap-4 items-center justify-between mb-6">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              <span>➕</span> Add Widget
+            </button>
+            <button
+              onClick={() => setEditMode(!editMode)}
+              className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
+                editMode
+                  ? 'bg-red-600 text-white hover:bg-red-700'
+                  : 'bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700'
+              }`}
             >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              <span>{editMode ? '✓' : '✏️'}</span>
+              {editMode ? 'Done Editing' : 'Edit Mode'}
+            </button>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+              className="px-4 py-2 bg-gray-200 dark:bg-gray-800 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-700"
+            >
+              {theme === 'light' ? '🌙' : '☀️'}
+            </button>
+            
+            <div className="relative">
+              <button
+                onClick={() => setShowMenu(!showMenu)}
+                className="px-4 py-2 bg-gray-200 dark:bg-gray-800 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-700"
+              >
+                ⋮
+              </button>
+              
+              {showMenu && (
+                <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-lg py-2 z-10">
+                  <button
+                    onClick={() => {
+                      handleExport();
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    📥 Export Config
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleImport();
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    📤 Import Config
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm('Are you sure you want to clear all widgets?')) {
+                        clearDashboard();
+                        setShowMenu(false);
+                      }
+                    }}
+                    className="w-full px-4 py-2 text-left text-red-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    🗑️ Clear Dashboard
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+
+        {/* Dashboard Grid */}
+        <DashboardGrid />
+      </div>
+
+      {/* Add Widget Modal */}
+      <AddWidgetModal isOpen={showAddModal} onClose={() => setShowAddModal(false)} />
     </div>
   );
 }
