@@ -47,10 +47,9 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(5);
 
-  // socket hook - expects { subscribe } returning unsubscribe function
-  const { subscribe } = useSocket('ws://localhost:4001');
+  const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:4001';
+  const { subscribe } = useSocket(WS_URL);
 
-  // Theme colors (kept same as your UI)
   const colors = {
     bgPrimary: theme === 'dark' ? '#0f1f3d' : '#ffffff',
     bgSecondary: theme === 'dark' ? '#1a2942' : '#f3f4f6',
@@ -60,7 +59,6 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
     textTertiary: theme === 'dark' ? '#6b7280' : '#9ca3af',
   };
 
-  // Fetch remote data (API URL configured on widget.config.apiUrl)
   async function fetchData() {
     setLoading(true);
     setError(null);
@@ -89,17 +87,14 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
     }
   }
 
-  // Periodic fetch when config changes (keeps existing UI behavior)
   useEffect(() => {
     fetchData();
     const rawInterval = (widget.config && (widget.config as any).refreshInterval) as number | undefined;
     const ms = Math.max(5000, typeof rawInterval === 'number' ? rawInterval : 60000);
     const iv = setInterval(fetchData, ms);
     return () => clearInterval(iv);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [widget.config]);
 
-  // Stable value(s) used for WS subscription - extract symbol explicitly to avoid re-subscribing every render
   const symbol = (widget.config as any)?.symbol as string | undefined;
   const mappingY = (widget.config as any)?.mapping?.y as string | undefined;
 
@@ -112,7 +107,6 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
     const unsubscribe = subscribe(channel, (msg: any) => {
       if (!msg) return;
 
-      // Try common fields first, then mapping path if configured
       const liveValue =
         msg.price ??
         msg.value ??
@@ -137,12 +131,9 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
 
       setLastUpdated(new Date());
     });
-
-    // subscribe should return an unsubscribe function; guard in case it's not
     return typeof unsubscribe === 'function' ? unsubscribe : () => {};
   }, [symbol, mappingY, subscribe]);
 
-  // Fields handling - include 'live' automatically so realtime value is visible when fields selected
   const userFields = (widget.config && (widget.config as any).fields) as string[] | undefined;
   const fields = userFields && userFields.length > 0
     ? (userFields.includes('live') ? userFields : [...userFields, 'live'])

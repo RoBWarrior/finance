@@ -65,7 +65,9 @@ export default function ChartWidget({ widget, onRemove, onEdit }: ChartWidgetPro
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const { subscribe } = useSocket("ws://localhost:4001");
+
+  const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:4001';
+  const { subscribe } = useSocket(WS_URL);
 
 
   // Theme colors

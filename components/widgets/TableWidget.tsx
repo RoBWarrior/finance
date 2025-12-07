@@ -48,7 +48,8 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   // SINGLE useSocket call (do not call inside effect)
-  const { subscribe } = useSocket('ws://localhost:4001') || { subscribe: undefined };
+  const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:4001';
+  const { subscribe } = useSocket(WS_URL);
 
   const defaultPageSize = ((widget.config as any)?.pagination?.pageSize as number) ?? 10;
   const [itemsPerPage, setItemsPerPage] = useState<number>(defaultPageSize);
