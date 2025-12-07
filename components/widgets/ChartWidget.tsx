@@ -4,6 +4,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Widget, useDashboardStore } from '../../store/useDashboardStore';
 import { fetchWithProxy } from '../../lib/fetchWithProxy';
+import { useSocket } from "../../lib/useSocket";
 import {
   ResponsiveContainer,
   LineChart,
@@ -64,6 +65,8 @@ export default function ChartWidget({ widget, onRemove, onEdit }: ChartWidgetPro
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const { subscribe } = useSocket("ws://localhost:4001");
+
 
   // Theme colors
   const colors = {
@@ -118,6 +121,35 @@ export default function ChartWidget({ widget, onRemove, onEdit }: ChartWidgetPro
 
     return () => clearInterval(iv);
   }, [apiUrl, intervalMs, fetchData]);
+
+
+  useEffect(() => {
+    if (!cfg.symbol) return;
+
+    const channel = `symbol:${cfg.symbol}`;
+
+    const unsubscribe = subscribe(channel, (msg: any) => {
+      if (msg == null) return;
+      const price = msg.price ?? msg.value ?? msg.last;
+      if (price == null) return;
+
+      const ts = msg.ts ?? msg.time ?? Date.now();
+      setSeries(prev => {
+        const next = [...prev, {
+          x: new Date(ts).toISOString(),
+          y: Number(price),
+          __raw: msg
+        }];
+        return next.slice(-200);
+      });
+
+      setLastUpdated(new Date());
+    });
+
+    return unsubscribe;
+  }, [cfg.symbol, subscribe]);
+
+
 
   useEffect(() => {
     if (!payload) {
@@ -242,14 +274,14 @@ export default function ChartWidget({ widget, onRemove, onEdit }: ChartWidgetPro
   };
 
   return (
-    <div 
+    <div
       className="h-full flex flex-col rounded-xl shadow-2xl border transition-colors"
-      style={{ 
+      style={{
         backgroundColor: colors.bgPrimary,
         borderColor: colors.border
       }}
     >
-      <div 
+      <div
         className="flex justify-between items-center px-5 py-4 border-b"
         style={{ borderColor: colors.border }}
       >
@@ -270,8 +302,8 @@ export default function ChartWidget({ widget, onRemove, onEdit }: ChartWidgetPro
             </svg>
           </button>
           {onEdit && (
-            <button 
-              onClick={onEdit} 
+            <button
+              onClick={onEdit}
               className="p-2 rounded-lg transition-all cursor-pointer"
               style={{ color: colors.textSecondary }}
             >
@@ -282,8 +314,8 @@ export default function ChartWidget({ widget, onRemove, onEdit }: ChartWidgetPro
             </button>
           )}
           {onRemove && (
-            <button 
-              onClick={onRemove} 
+            <button
+              onClick={onRemove}
               className="p-2 rounded-lg transition-all cursor-pointer"
               style={{ color: colors.textSecondary }}
             >
@@ -372,9 +404,9 @@ export default function ChartWidget({ widget, onRemove, onEdit }: ChartWidgetPro
         )}
       </div>
 
-      <div 
+      <div
         className="px-5 py-3 border-t transition-colors"
-        style={{ 
+        style={{
           borderColor: colors.border,
           backgroundColor: `${colors.bgSecondary}50`
         }}

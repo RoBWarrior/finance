@@ -4,6 +4,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Widget, useDashboardStore } from '../../store/useDashboardStore';
 import { fetchWithProxy } from '../../lib/fetchWithProxy';
+import { useSocket } from '../../lib/useSocket';
 
 interface TableWidgetProps {
   widget: Widget;
@@ -46,10 +47,19 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
   const [currentPage, setCurrentPage] = useState(1);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
+  // SINGLE useSocket call (do not call inside effect)
+  const { subscribe } = useSocket('ws://localhost:4001') || { subscribe: undefined };
+
   const defaultPageSize = ((widget.config as any)?.pagination?.pageSize as number) ?? 10;
   const [itemsPerPage, setItemsPerPage] = useState<number>(defaultPageSize);
 
-  // Theme colors
+  // If the widget config's pageSize changes, update itemsPerPage
+  useEffect(() => {
+    const cfgSize = ((widget.config as any)?.pagination?.pageSize as number) ?? defaultPageSize;
+    setItemsPerPage(cfgSize);
+  }, [widget.config, defaultPageSize]);
+
+  // Theme colors (kept same)
   const colors = {
     bgPrimary: theme === 'dark' ? '#0f1f3d' : '#ffffff',
     bgSecondary: theme === 'dark' ? '#1a2942' : '#f3f4f6',
@@ -94,6 +104,7 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
               __raw: v,
             };
           });
+          // newest first (original behaviour)
           rows.sort((a, b) => (b.date > a.date ? 1 : -1));
         } else if (Array.isArray(payload)) {
           rows = payload;
@@ -105,6 +116,8 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
         setData(rows);
         setLastUpdated(new Date());
         setCurrentPage(1);
+      } else {
+        setData([]);
       }
     } catch (e: any) {
       setError(e?.message || 'Failed to fetch');
@@ -114,13 +127,72 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
     }
   }
 
+  // initial fetch + polling (same behaviour)
   useEffect(() => {
     fetchData();
     const rawInterval = (widget.config && (widget.config as any).refreshInterval) as number | undefined;
     const ms = Math.max(5000, typeof rawInterval === 'number' ? rawInterval : 60000);
     const iv = setInterval(fetchData, ms);
     return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [widget.config]);
+
+  // Socket subscription: ONE effect that uses the `subscribe` obtained above.
+  useEffect(() => {
+    // guard
+    if (typeof subscribe !== 'function') return;
+
+    const symbol = (widget.config as any)?.symbol;
+    if (!symbol) return;
+
+    const channel = `symbol:${symbol}`;
+
+    const unsubscribe = subscribe(channel, (msg: any) => {
+      if (!msg) return;
+
+      // extract timestamp and best numeric value
+      const timestamp = msg.ts || msg.time || msg.timestamp || new Date().toISOString();
+      const value =
+        msg.price ?? msg.value ?? msg.last ?? getValueByPath(msg, (widget.config as any)?.mapping?.y);
+
+      if (value == null) return;
+
+      // update `data` safely (prev typed as any)
+      setData((prev: any) => {
+        // if prev is an array of rows -> prepend new row (keep last 200)
+        if (Array.isArray(prev)) {
+          const newRow: any = {
+            date: timestamp,
+            value,
+            __live: msg,
+          };
+
+          // attempt to map into typical time-series keys if present
+          if (prev.length > 0 && prev[0] && typeof prev[0] === 'object') {
+            const sampleKeys = Object.keys(prev[0]);
+            if (sampleKeys.includes('close')) newRow.close = value;
+            if (sampleKeys.includes('price')) newRow.price = value;
+            if (sampleKeys.includes('rate')) newRow.rate = value;
+          }
+
+          const next = [newRow, ...prev];
+          return next.slice(0, 200);
+        }
+
+        // if prev is an object (single object payload) => merge 'live'
+        if (prev && typeof prev === 'object') {
+          return { ...prev, live: value, __live: msg };
+        }
+
+        // otherwise create single-row array
+        return [{ date: timestamp, value, __live: msg }];
+      });
+
+      setLastUpdated(new Date());
+    });
+
+    return typeof unsubscribe === 'function' ? unsubscribe : () => {};
+  }, [subscribe, widget.config]);
 
   const userFields = (widget.config && (widget.config as any).fields) as string[] | undefined;
   const isTimeSeriesRows =
@@ -183,19 +255,18 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
   };
 
   return (
-    <div 
+    <div
       className="h-full flex flex-col rounded-xl shadow-2xl border transition-colors"
-      style={{ 
+      style={{
         backgroundColor: colors.bgPrimary,
-        borderColor: colors.border
+        borderColor: colors.border,
       }}
     >
-      <div 
-        className="flex justify-between items-center px-5 py-4 border-b"
-        style={{ borderColor: colors.border }}
-      >
+      <div className="flex justify-between items-center px-5 py-4 border-b" style={{ borderColor: colors.border }}>
         <div>
-          <h3 className="text-lg font-bold" style={{ color: colors.textPrimary }}>{widget.title}</h3>
+          <h3 className="text-lg font-bold" style={{ color: colors.textPrimary }}>
+            {widget.title}
+          </h3>
           <p className="text-xs mt-0.5" style={{ color: colors.textTertiary }}>
             {filteredRows.length} {filteredRows.length === 1 ? 'item' : 'items'}
           </p>
@@ -243,13 +314,7 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
       {!loading && !error && (
         <div className="px-5 py-3 border-b" style={{ borderColor: colors.border }}>
           <div className="relative">
-            <svg 
-              className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2" 
-              fill="none" 
-              stroke="currentColor" 
-              viewBox="0 0 24 24"
-              style={{ color: colors.textSecondary }}
-            >
+            <svg className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ color: colors.textSecondary }}>
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
             <input
@@ -261,10 +326,10 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
                 setCurrentPage(1);
               }}
               className="w-full pl-10 pr-4 py-2 rounded-lg border focus:outline-none focus:border-teal-500 transition-colors text-sm"
-              style={{ 
+              style={{
                 backgroundColor: colors.bgSecondary,
                 borderColor: colors.border,
-                color: colors.textPrimary
+                color: colors.textPrimary,
               }}
             />
           </div>
@@ -285,10 +350,7 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <div className="text-red-400 mb-4">{error}</div>
-              <button
-                onClick={fetchData}
-                className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg transition-colors"
-              >
+              <button onClick={fetchData} className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg transition-colors">
                 Retry
               </button>
             </div>
@@ -298,17 +360,10 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
         {!loading && !error && paginatedData.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead 
-                className="sticky top-0 z-10"
-                style={{ backgroundColor: colors.bgSecondary }}
-              >
+              <thead className="sticky top-0 z-10" style={{ backgroundColor: colors.bgSecondary }}>
                 <tr>
                   {columns.map((col) => (
-                    <th 
-                      key={col} 
-                      className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider"
-                      style={{ color: colors.textTertiary }}
-                    >
+                    <th key={col} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: colors.textTertiary }}>
                       {col}
                     </th>
                   ))}
@@ -316,14 +371,14 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
               </thead>
               <tbody className="divide-y" style={{ borderColor: colors.border }}>
                 {paginatedData.map((row, rowIdx) => (
-                  <tr 
-                    key={rowIdx} 
+                  <tr
+                    key={rowIdx}
                     className="transition-colors"
                     style={{
-                      backgroundColor: colors.bgPrimary
+                      backgroundColor: colors.bgPrimary,
                     }}
-                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = colors.bgHover}
-                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = colors.bgPrimary}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = colors.bgHover)}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = colors.bgPrimary)}
                   >
                     {columns.map((col) => {
                       let val: any;
@@ -336,14 +391,16 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
                       }
 
                       let cellContent: React.ReactNode;
-                      if (val == null) 
-                        cellContent = <span style={{ color: colors.textTertiary }}>—</span>;
+                      if (val == null) cellContent = <span style={{ color: colors.textTertiary }}>—</span>;
                       else if (typeof val === 'number')
-                        cellContent = <span className="font-medium" style={{ color: colors.textPrimary }}>{val.toLocaleString()}</span>;
+                        cellContent = (
+                          <span className="font-medium" style={{ color: colors.textPrimary }}>
+                            {val.toLocaleString()}
+                          </span>
+                        );
                       else if (typeof val === 'string')
                         cellContent = <span style={{ color: colors.textSecondary }}>{val.length > 200 ? val.slice(0, 200) + '…' : val}</span>;
-                      else 
-                        cellContent = <span className="text-xs" style={{ color: colors.textTertiary }}>{JSON.stringify(val).slice(0, 100)}</span>;
+                      else cellContent = <span className="text-xs" style={{ color: colors.textTertiary }}>{JSON.stringify(val).slice(0, 100)}</span>;
 
                       return (
                         <td key={col} className="px-4 py-3 text-sm">
@@ -366,13 +423,7 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
       </div>
 
       {!loading && !error && (
-        <div 
-          className="px-5 py-3 border-t transition-colors"
-          style={{ 
-            borderColor: colors.border,
-            backgroundColor: `${colors.bgSecondary}50`
-          }}
-        >
+        <div className="px-5 py-3 border-t transition-colors" style={{ borderColor: colors.border, backgroundColor: `${colors.bgSecondary}50` }}>
           <div className="flex items-center justify-between text-sm">
             <div className="flex items-center gap-4">
               <span style={{ color: colors.textSecondary }}>
@@ -391,11 +442,7 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
                   onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                   disabled={currentPage === 1}
                   className="px-3 py-1.5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors border cursor-pointer"
-                  style={{ 
-                    backgroundColor: colors.bgSecondary,
-                    color: colors.textSecondary,
-                    borderColor: colors.border
-                  }}
+                  style={{ backgroundColor: colors.bgSecondary, color: colors.textSecondary, borderColor: colors.border }}
                 >
                   ← Prev
                 </button>
@@ -403,11 +450,7 @@ export default function TableWidget({ widget, onRemove, onEdit }: TableWidgetPro
                   onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                   disabled={currentPage === totalPages}
                   className="px-3 py-1.5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors border cursor-pointer"
-                  style={{ 
-                    backgroundColor: colors.bgSecondary,
-                    color: colors.textSecondary,
-                    borderColor: colors.border
-                  }}
+                  style={{ backgroundColor: colors.bgSecondary, color: colors.textSecondary, borderColor: colors.border }}
                 >
                   Next →
                 </button>

@@ -1,10 +1,11 @@
 // components/widgets/CardWidget.tsx
 'use client';
 
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Widget } from '../../store/useDashboardStore';
 import { fetchWithProxy } from '../../lib/fetchWithProxy';
 import { useDashboardStore } from '../../store/useDashboardStore';
+import { useSocket } from '../../lib/useSocket';
 
 interface CardWidgetProps {
   widget: Widget;
@@ -13,7 +14,7 @@ interface CardWidgetProps {
 }
 
 function getValueByPath(obj: any, path: string) {
-  if (!path) return undefined;
+  if (!path || obj == null) return undefined;
   try {
     const parts = path.split('.').flatMap((part) => {
       const re = /([^\[\]]+)|\[(\d+)\]/g;
@@ -29,7 +30,7 @@ function getValueByPath(obj: any, path: string) {
     let cur: any = obj;
     for (const p of parts) {
       if (cur == null) return undefined;
-      cur = cur[p];
+      cur = /^\d+$/.test(p) && Array.isArray(cur) ? cur[Number(p)] : cur[p];
     }
     return cur;
   } catch {
@@ -46,7 +47,10 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(5);
 
-  // Theme colors
+  // socket hook - expects { subscribe } returning unsubscribe function
+  const { subscribe } = useSocket('ws://localhost:4001');
+
+  // Theme colors (kept same as your UI)
   const colors = {
     bgPrimary: theme === 'dark' ? '#0f1f3d' : '#ffffff',
     bgSecondary: theme === 'dark' ? '#1a2942' : '#f3f4f6',
@@ -56,6 +60,7 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
     textTertiary: theme === 'dark' ? '#6b7280' : '#9ca3af',
   };
 
+  // Fetch remote data (API URL configured on widget.config.apiUrl)
   async function fetchData() {
     setLoading(true);
     setError(null);
@@ -84,21 +89,69 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
     }
   }
 
+  // Periodic fetch when config changes (keeps existing UI behavior)
   useEffect(() => {
     fetchData();
     const rawInterval = (widget.config && (widget.config as any).refreshInterval) as number | undefined;
     const ms = Math.max(5000, typeof rawInterval === 'number' ? rawInterval : 60000);
     const iv = setInterval(fetchData, ms);
     return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [widget.config]);
 
+  // Stable value(s) used for WS subscription - extract symbol explicitly to avoid re-subscribing every render
+  const symbol = (widget.config as any)?.symbol as string | undefined;
+  const mappingY = (widget.config as any)?.mapping?.y as string | undefined;
+
+  // WebSocket live update subscription
+  useEffect(() => {
+    if (!symbol || typeof subscribe !== 'function') return;
+
+    const channel = `symbol:${symbol}`;
+
+    const unsubscribe = subscribe(channel, (msg: any) => {
+      if (!msg) return;
+
+      // Try common fields first, then mapping path if configured
+      const liveValue =
+        msg.price ??
+        msg.value ??
+        msg.last ??
+        getValueByPath(msg, mappingY ?? '');
+
+      if (liveValue == null) return;
+
+      setData((prev: any) => {
+        // If prev is array, put live into first element (non-destructive)
+        if (Array.isArray(prev)) {
+          const copy = [...prev];
+          const first = copy[0] && typeof copy[0] === 'object' ? { ...copy[0], live: liveValue } : { live: liveValue };
+          copy[0] = first;
+          return copy;
+        }
+
+        // Ensure data remains object-shaped so getValueByPath works reliably
+        const base = prev && typeof prev === 'object' ? prev : {};
+        return { ...base, live: liveValue };
+      });
+
+      setLastUpdated(new Date());
+    });
+
+    // subscribe should return an unsubscribe function; guard in case it's not
+    return typeof unsubscribe === 'function' ? unsubscribe : () => {};
+  }, [symbol, mappingY, subscribe]);
+
+  // Fields handling - include 'live' automatically so realtime value is visible when fields selected
   const userFields = (widget.config && (widget.config as any).fields) as string[] | undefined;
-  const fields = userFields && userFields.length > 0 ? userFields : [];
+  const fields = userFields && userFields.length > 0
+    ? (userFields.includes('live') ? userFields : [...userFields, 'live'])
+    : [];
 
   const isDataArray = Array.isArray(data);
   const paginateFields = fields.length > 0;
 
-  const itemsToPaginate = useMemo(() => {
+  const itemsToPaginate = React.useMemo(() => {
     if (paginateFields) return fields.slice();
     if (isDataArray) return (data as any[])?.slice() || [];
     return [];
@@ -112,7 +165,7 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
     if (currentPage < 1) setCurrentPage(1);
   }, [totalPages, currentPage]);
 
-  const pageItems = useMemo(() => {
+  const pageItems = React.useMemo(() => {
     const start = (currentPage - 1) * pageSize;
     return itemsToPaginate.slice(start, start + pageSize);
   }, [itemsToPaginate, currentPage, pageSize]);
@@ -133,21 +186,21 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
       value != null ? (typeof value === 'object' ? JSON.stringify(value) : String(value)) : 'N/A';
 
     return (
-      <div 
-        key={fieldPath} 
+      <div
+        key={fieldPath}
         className="rounded-lg p-4 border transition-colors"
-        style={{ 
+        style={{
           backgroundColor: colors.bgSecondary,
-          borderColor: colors.border
+          borderColor: colors.border,
         }}
       >
-        <div 
+        <div
           className="text-xs mb-2 font-medium uppercase tracking-wide"
           style={{ color: colors.textTertiary }}
         >
           {fieldPath}
         </div>
-        <div 
+        <div
           className="text-2xl font-bold break-all"
           style={{ color: colors.textPrimary }}
         >
@@ -160,15 +213,15 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
   const renderArrayItem = (item: any, idx: number) => {
     if (fields.length === 0) {
       return (
-        <div 
-          key={idx} 
+        <div
+          key={idx}
           className="rounded-lg p-4 border transition-colors"
-          style={{ 
+          style={{
             backgroundColor: colors.bgSecondary,
-            borderColor: colors.border
+            borderColor: colors.border,
           }}
         >
-          <pre 
+          <pre
             className="text-sm whitespace-pre-wrap font-mono"
             style={{ color: colors.textSecondary }}
           >
@@ -186,21 +239,21 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
             value != null ? (typeof value === 'object' ? JSON.stringify(value) : String(value)) : 'N/A';
 
           return (
-            <div 
-              key={fieldPath} 
+            <div
+              key={fieldPath}
               className="rounded-lg p-4 border transition-colors"
-              style={{ 
+              style={{
                 backgroundColor: colors.bgSecondary,
-                borderColor: colors.border
+                borderColor: colors.border,
               }}
             >
-              <div 
+              <div
                 className="text-xs mb-2 font-medium uppercase tracking-wide"
                 style={{ color: colors.textTertiary }}
               >
                 {fieldPath}
               </div>
-              <div 
+              <div
                 className="text-2xl font-bold break-all"
                 style={{ color: colors.textPrimary }}
               >
@@ -214,14 +267,14 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
   };
 
   return (
-    <div 
+    <div
       className="h-full flex flex-col rounded-xl shadow-2xl border transition-colors"
-      style={{ 
+      style={{
         backgroundColor: colors.bgPrimary,
-        borderColor: colors.border
+        borderColor: colors.border,
       }}
     >
-      <div 
+      <div
         className="flex justify-between items-center px-5 py-4 border-b"
         style={{ borderColor: colors.border }}
       >
@@ -311,7 +364,19 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
               <div className="space-y-4">
                 {fields.length === 0 ? (
                   <div className="text-center text-sm py-8" style={{ color: colors.textSecondary }}>
-                    No fields selected. Click settings to edit.
+                    {/* Show live if available as fallback */}
+                    {getValueByPath(data, 'live') != null ? (
+                      <div>
+                        <div className="text-xs mb-2 font-medium uppercase tracking-wide" style={{ color: colors.textTertiary }}>
+                          Live
+                        </div>
+                        <div className="text-2xl font-bold" style={{ color: colors.textPrimary }}>
+                          {String(getValueByPath(data, 'live'))}
+                        </div>
+                      </div>
+                    ) : (
+                      <>No fields selected. Click settings to edit.</>
+                    )}
                   </div>
                 ) : (
                   fields.map((fieldPath) => {
@@ -320,21 +385,21 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
                       value != null ? (typeof value === 'object' ? JSON.stringify(value) : String(value)) : 'N/A';
 
                     return (
-                      <div 
-                        key={fieldPath} 
+                      <div
+                        key={fieldPath}
                         className="rounded-lg p-4 border transition-colors"
-                        style={{ 
+                        style={{
                           backgroundColor: colors.bgSecondary,
-                          borderColor: colors.border
+                          borderColor: colors.border,
                         }}
                       >
-                        <div 
+                        <div
                           className="text-xs mb-2 font-medium uppercase tracking-wide"
                           style={{ color: colors.textTertiary }}
                         >
                           {fieldPath}
                         </div>
-                        <div 
+                        <div
                           className="text-2xl font-bold break-all"
                           style={{ color: colors.textPrimary }}
                         >
@@ -356,11 +421,11 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
         )}
       </div>
 
-      <div 
+      <div
         className="px-5 py-3 border-t transition-colors"
-        style={{ 
+        style={{
           borderColor: colors.border,
-          backgroundColor: `${colors.bgSecondary}50`
+          backgroundColor: `${colors.bgSecondary}50`,
         }}
       >
         <div className="flex items-center justify-between text-sm">
@@ -374,10 +439,10 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                 disabled={currentPage === 1}
                 className="px-3 py-1.5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors border cursor-pointer"
-                style={{ 
+                style={{
                   backgroundColor: colors.bgSecondary,
                   color: colors.textSecondary,
-                  borderColor: colors.border
+                  borderColor: colors.border,
                 }}
               >
                 ← Prev
@@ -389,10 +454,10 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
                 onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                 disabled={currentPage === totalPages}
                 className="px-3 py-1.5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors border cursor-pointer"
-                style={{ 
+                style={{
                   backgroundColor: colors.bgSecondary,
                   color: colors.textSecondary,
-                  borderColor: colors.border
+                  borderColor: colors.border,
                 }}
               >
                 Next →
