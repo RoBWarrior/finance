@@ -1,7 +1,8 @@
 // components/AddWidgetModal.tsx
 'use client';
 
-import { useState } from 'react';
+import React, { useState } from 'react';
+import JsonExplorer from './JsonExplorer';
 import { useDashboardStore, Widget } from '../store/useDashboardStore';
 
 interface AddWidgetModalProps {
@@ -10,255 +11,238 @@ interface AddWidgetModalProps {
 }
 
 export default function AddWidgetModal({ isOpen, onClose }: AddWidgetModalProps) {
-  const { addWidget } = useDashboardStore();
-  const [step, setStep] = useState(1);
-  const [widgetType, setWidgetType] = useState<'table' | 'card' | 'chart'>('card');
+  const addWidget = useDashboardStore((s) => s.addWidget);
+
   const [title, setTitle] = useState('');
-  const [config, setConfig] = useState<any>({
-    symbols: [],
-    symbol: '',
-    cardType: 'watchlist',
-    chartType: 'line',
-    interval: 'daily',
-    refreshInterval: 60000,
-  });
+  const [apiUrl, setApiUrl] = useState('');
+  const [widgetType, setWidgetType] = useState<'table' | 'card' | 'chart'>('table');
+  const [refreshInterval, setRefreshInterval] = useState<number>(30);
 
-  const handleAddSymbol = (symbol: string) => {
-    if (symbol && !config.symbols.includes(symbol.toUpperCase())) {
-      setConfig({
-        ...config,
-        symbols: [...config.symbols, symbol.toUpperCase()],
-      });
+  const [loading, setLoading] = useState(false);
+  const [sample, setSample] = useState<any | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedFields, setSelectedFields] = useState<string[]>([]);
+
+  async function handleTest() {
+    setError(null);
+    setLoading(true);
+    setSample(null);
+    setSelectedFields([]);
+
+    if (!apiUrl) {
+      setError('Please enter an API URL.');
+      setLoading(false);
+      return;
     }
-  };
 
-  const handleRemoveSymbol = (symbol: string) => {
-    setConfig({
-      ...config,
-      symbols: config.symbols.filter((s: string) => s !== symbol),
-    });
-  };
+    try {
+      const resp = await fetch(apiUrl, { method: 'GET' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      setSample(data);
 
-  const handleCreate = () => {
+      const probe = Array.isArray(data) ? data[0] : data && typeof data === 'object' ? data : null;
+      const recommended: string[] = [];
+      if (probe && typeof probe === 'object') {
+        for (const k of Object.keys(probe)) {
+          const v = (probe as any)[k];
+          if (typeof v === 'number' || typeof v === 'string') recommended.push(k);
+          if (recommended.length >= 3) break;
+        }
+      }
+      setSelectedFields(recommended);
+    } catch (err: any) {
+      try {
+        const proxyResp = await fetch('/api/proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: apiUrl }),
+        });
+        if (!proxyResp.ok) throw new Error(`Proxy error`);
+        const data = await proxyResp.json();
+        setSample(data);
+      } catch (err2: any) {
+        setError('Failed to fetch. CORS or network error.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleCreate() {
+    if (!sample) {
+      alert('Please Test API first.');
+      return;
+    }
+
     const newWidget: Widget = {
       id: `widget-${Date.now()}`,
       type: widgetType,
       title: title || `New ${widgetType}`,
-      config,
+      config: {
+        apiUrl,
+        fields: selectedFields.length ? selectedFields : undefined,
+        refreshInterval: Math.max(5000, (refreshInterval || 30) * 1000),
+      },
       position: { x: 0, y: 0, w: 1, h: 1 },
     };
 
     addWidget(newWidget);
     onClose();
-    resetForm();
-  };
-
-  const resetForm = () => {
-    setStep(1);
-    setWidgetType('card');
     setTitle('');
-    setConfig({
-      symbols: [],
-      symbol: '',
-      cardType: 'watchlist',
-      chartType: 'line',
-      interval: 'daily',
-      refreshInterval: 60000,
-    });
-  };
+    setApiUrl('');
+    setSample(null);
+    setSelectedFields([]);
+    setRefreshInterval(30);
+    setWidgetType('table');
+  }
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-900 rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold">Add New Widget</h2>
-          <button
-            onClick={() => {
-              onClose();
-              resetForm();
-            }}
-            className="text-gray-500 hover:text-gray-700 text-2xl"
-          >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-2xl bg-[#0f1f3d] rounded-xl shadow-2xl overflow-hidden border border-gray-700">
+        <div className="px-6 py-4 border-b border-gray-700 flex justify-between items-center">
+          <h3 className="text-xl font-bold text-white">Add New Widget</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl transition-colors">
             ✕
           </button>
         </div>
 
-        {step === 1 && (
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold mb-4">Select Widget Type</h3>
-            <div className="grid grid-cols-3 gap-4">
+        <div className="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Widget Name</label>
+            <input
+              className="w-full px-4 py-2.5 bg-[#1a2942] border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-teal-500 transition-colors"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g., Bitcoin Price Tracker"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">API URL</label>
+            <div className="flex gap-2">
+              <input
+                className="flex-1 px-4 py-2.5 bg-[#1a2942] border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-teal-500 transition-colors"
+                value={apiUrl}
+                onChange={(e) => setApiUrl(e.target.value)}
+                placeholder="https://api.coinbase.com/v2/exchange-rates?currency=BTC"
+              />
               <button
-                onClick={() => setWidgetType('card')}
-                className={`p-6 border-2 rounded-lg text-center transition ${
-                  widgetType === 'card'
-                    ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20'
-                    : 'border-gray-300 hover:border-blue-400'
-                }`}
+                onClick={handleTest}
+                className="px-5 py-2.5 bg-teal-500 hover:bg-teal-600 text-white rounded-lg font-medium transition-colors flex items-center gap-2 cursor-pointer"
+                disabled={loading}
               >
-                <div className="text-4xl mb-2">🃏</div>
-                <div className="font-semibold">Card</div>
-                <div className="text-sm text-gray-500">Watchlist, Gainers</div>
-              </button>
-              <button
-                onClick={() => setWidgetType('chart')}
-                className={`p-6 border-2 rounded-lg text-center transition ${
-                  widgetType === 'chart'
-                    ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20'
-                    : 'border-gray-300 hover:border-blue-400'
-                }`}
-              >
-                <div className="text-4xl mb-2">📈</div>
-                <div className="font-semibold">Chart</div>
-                <div className="text-sm text-gray-500">Line, Candlestick</div>
-              </button>
-              <button
-                onClick={() => setWidgetType('table')}
-                className={`p-6 border-2 rounded-lg text-center transition ${
-                  widgetType === 'table'
-                    ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20'
-                    : 'border-gray-300 hover:border-blue-400'
-                }`}
-              >
-                <div className="text-4xl mb-2">📋</div>
-                <div className="font-semibold">Table</div>
-                <div className="text-sm text-gray-500">Stock List</div>
+                {loading ? (
+                  <>
+                    <span className="animate-spin"></span>
+                    Testing...
+                  </>
+                ) : (
+                  <>
+                    Test
+                  </>
+                )}
               </button>
             </div>
-            <button
-              onClick={() => setStep(2)}
-              className="w-full mt-6 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
-              Next
-            </button>
+            {error && (
+              <div className="mt-2 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
+                {error}
+              </div>
+            )}
+            {sample && (
+              <div className="mt-2 px-3 py-2 bg-teal-500/10 border border-teal-500/30 rounded-lg text-teal-400 text-sm flex items-center gap-2">
+                <span>✓</span>
+                API connection successful — {selectedFields.length} top-level fields found
+              </div>
+            )}
           </div>
-        )}
 
-        {step === 2 && (
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold mb-4">Configure Widget</h3>
-
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-2">Widget Title</label>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Display Mode</label>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setWidgetType('card')}
+                  className={`flex-1 px-3 py-2 rounded-lg border transition-all cursor-pointer ${
+                    widgetType === 'card'
+                      ? 'bg-teal-500 border-teal-500 text-white'
+                      : 'bg-[#1a2942] border-gray-700 text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  Card
+                </button>
+                <button
+                  onClick={() => setWidgetType('table')}
+                  className={`flex-1 px-3 py-2 rounded-lg border transition-all cursor-pointer ${
+                    widgetType === 'table'
+                      ? 'bg-teal-500 border-teal-500 text-white'
+                      : 'bg-[#1a2942] border-gray-700 text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  Table
+                </button>
+                <button
+                  onClick={() => setWidgetType('chart')}
+                  className={`flex-1 px-3 py-2 rounded-lg border transition-all cursor-pointer ${
+                    widgetType === 'chart'
+                      ? 'bg-teal-500 border-teal-500 text-white'
+                      : 'bg-[#1a2942] border-gray-700 text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  Chart
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Refresh Interval (seconds)</label>
               <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder={`My ${widgetType}`}
-                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700"
+                type="number"
+                className="w-full px-4 py-2.5 bg-[#1a2942] border border-gray-700 rounded-lg text-white focus:outline-none focus:border-teal-500 transition-colors"
+                value={refreshInterval}
+                onChange={(e) => setRefreshInterval(Number(e.target.value) || 30)}
+                min={5}
               />
             </div>
+          </div>
 
-            {widgetType === 'card' && (
+          {sample && (
+            <>
               <div>
-                <label className="block text-sm font-medium mb-2">Card Type</label>
-                <select
-                  value={config.cardType}
-                  onChange={(e) => setConfig({ ...config, cardType: e.target.value })}
-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700"
-                >
-                  <option value="watchlist">Watchlist</option>
-                  <option value="gainers">Market Gainers</option>
-                  <option value="performance">Performance</option>
-                </select>
-              </div>
-            )}
-
-            {(widgetType === 'table' || config.cardType === 'watchlist') && (
-              <div>
-                <label className="block text-sm font-medium mb-2">Stock Symbols</label>
-                <div className="flex gap-2 mb-2">
-                  <input
-                    type="text"
-                    placeholder="Enter symbol (e.g., AAPL)"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        handleAddSymbol(e.currentTarget.value);
-                        e.currentTarget.value = '';
-                      }
-                    }}
-                    className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700"
+                <label className="block text-sm font-medium text-gray-300 mb-2">Select Fields to Display</label>
+                <div className="bg-[#1a2942] border border-gray-700 rounded-lg p-4 max-h-64 overflow-auto">
+                  <JsonExplorer
+                    sample={sample}
+                    initialSelection={selectedFields}
+                    onChange={(next) => setSelectedFields(next)}
                   />
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {config.symbols.map((symbol: string) => (
-                    <span
-                      key={symbol}
-                      className="px-3 py-1 bg-blue-100 dark:bg-blue-900 rounded-full text-sm flex items-center gap-2"
-                    >
-                      {symbol}
-                      <button
-                        onClick={() => handleRemoveSymbol(symbol)}
-                        className="text-red-600 hover:text-red-800"
-                      >
-                        ✕
-                      </button>
-                    </span>
-                  ))}
-                </div>
+                {selectedFields.length > 0 && (
+                  <div className="mt-2 text-sm text-gray-400">
+                    Selected fields: <span className="text-teal-400">{selectedFields.join(', ')}</span>
+                  </div>
+                )}
               </div>
-            )}
+            </>
+          )}
+        </div>
 
-            {(widgetType === 'chart' || config.cardType === 'performance') && (
-              <div>
-                <label className="block text-sm font-medium mb-2">Stock Symbol</label>
-                <input
-                  type="text"
-                  value={config.symbol}
-                  onChange={(e) =>
-                    setConfig({ ...config, symbol: e.target.value.toUpperCase() })
-                  }
-                  placeholder="AAPL"
-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700"
-                />
-              </div>
-            )}
-
-            {widgetType === 'chart' && (
-              <>
-                <div>
-                  <label className="block text-sm font-medium mb-2">Chart Type</label>
-                  <select
-                    value={config.chartType}
-                    onChange={(e) => setConfig({ ...config, chartType: e.target.value })}
-                    className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700"
-                  >
-                    <option value="line">Line Chart</option>
-                    <option value="candlestick">Candlestick</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">Interval</label>
-                  <select
-                    value={config.interval}
-                    onChange={(e) => setConfig({ ...config, interval: e.target.value })}
-                    className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700"
-                  >
-                    <option value="daily">Daily</option>
-                    <option value="weekly">Weekly</option>
-                    <option value="monthly">Monthly</option>
-                  </select>
-                </div>
-              </>
-            )}
-
-            <div className="flex gap-2 mt-6">
-              <button
-                onClick={() => setStep(1)}
-                className="flex-1 px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleCreate}
-                className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-              >
-                Create Widget
-              </button>
-            </div>
-          </div>
-        )}
+        <div className="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="px-5 py-2.5 bg-[#1a2942] hover:bg-[#243554] text-gray-300 rounded-lg border border-gray-700 transition-colors cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleCreate}
+            className="px-5 py-2.5 bg-teal-500 hover:bg-teal-600 text-white rounded-lg font-medium transition-colors cursor-pointer"
+          >
+            Add Widget
+          </button>
+        </div>
       </div>
     </div>
   );

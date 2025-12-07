@@ -1,193 +1,291 @@
 // components/widgets/CardWidget.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
-import { apiClient, StockQuote } from '../../lib/apiClient';
+import React, { useEffect, useState, useMemo } from 'react';
 import { Widget } from '../../store/useDashboardStore';
+import { fetchWithProxy } from '../../lib/fetchWithProxy';
+import { useDashboardStore } from '../../store/useDashboardStore';
 
 interface CardWidgetProps {
   widget: Widget;
-  onRemove?: () => void;
-  onEdit?: () => void;
+  onRemove: () => void;
+  onEdit: () => void;
+}
+
+function getValueByPath(obj: any, path: string) {
+  if (!path) return undefined;
+  try {
+    const parts = path.split('.').flatMap((part) => {
+      const re = /([^\[\]]+)|\[(\d+)\]/g;
+      const out: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(part)) !== null) {
+        if (m[1]) out.push(m[1]);
+        if (m[2]) out.push(m[2]);
+      }
+      return out;
+    });
+
+    let cur: any = obj;
+    for (const p of parts) {
+      if (cur == null) return undefined;
+      cur = cur[p];
+    }
+    return cur;
+  } catch {
+    return undefined;
+  }
 }
 
 export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps) {
+  const theme = useDashboardStore((s) => s.theme);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(5);
 
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(
-      fetchData,
-      widget.config.refreshInterval || 60000
-    );
-    return () => clearInterval(interval);
-  }, [widget.config]);
+  // Theme colors
+  const colors = {
+    bgPrimary: theme === 'dark' ? '#0f1f3d' : '#ffffff',
+    bgSecondary: theme === 'dark' ? '#1a2942' : '#f3f4f6',
+    border: theme === 'dark' ? '#374151' : '#d1d5db',
+    textPrimary: theme === 'dark' ? '#ffffff' : '#111827',
+    textSecondary: theme === 'dark' ? '#9ca3af' : '#6b7280',
+    textTertiary: theme === 'dark' ? '#6b7280' : '#9ca3af',
+  };
 
-  const fetchData = async () => {
+  async function fetchData() {
     setLoading(true);
     setError(null);
 
     try {
-      switch (widget.config.cardType) {
-        case 'watchlist':
-          if (widget.config.symbols && widget.config.symbols.length > 0) {
-            const quotes = await Promise.all(
-              widget.config.symbols.map((symbol) =>
-                apiClient.getStockQuote(symbol)
-              )
-            );
-            setData(quotes);
-          }
-          break;
+      const configAny = (widget.config as any) || {};
+      const url = configAny.apiUrl as string | undefined;
 
-        case 'gainers':
-          const marketData = await apiClient.getTopGainersLosers();
-          setData(marketData.gainers);
-          break;
+      if (url) {
+        const payload = await fetchWithProxy(url);
+        setData(payload);
+        setLastUpdated(new Date());
+        setCurrentPage(1);
 
-        case 'performance':
-          if (widget.config.symbol) {
-            const quote = await apiClient.getStockQuote(widget.config.symbol);
-            setData(quote);
-          }
-          break;
+        const cfgPageSize =
+          typeof configAny.pagination?.pageSize === 'number' ? configAny.pagination.pageSize : undefined;
+        if (cfgPageSize) setPageSize(Math.max(1, cfgPageSize));
+      } else {
+        setError('No API URL configured');
       }
-    } catch (err) {
-      setError('Failed to fetch data');
-      console.error(err);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to fetch data');
+      setData(null);
     } finally {
       setLoading(false);
     }
+  }
+
+  useEffect(() => {
+    fetchData();
+    const rawInterval = (widget.config && (widget.config as any).refreshInterval) as number | undefined;
+    const ms = Math.max(5000, typeof rawInterval === 'number' ? rawInterval : 60000);
+    const iv = setInterval(fetchData, ms);
+    return () => clearInterval(iv);
+  }, [widget.config]);
+
+  const userFields = (widget.config && (widget.config as any).fields) as string[] | undefined;
+  const fields = userFields && userFields.length > 0 ? userFields : [];
+
+  const isDataArray = Array.isArray(data);
+  const paginateFields = fields.length > 0;
+
+  const itemsToPaginate = useMemo(() => {
+    if (paginateFields) return fields.slice();
+    if (isDataArray) return (data as any[])?.slice() || [];
+    return [];
+  }, [fields, paginateFields, isDataArray, data]);
+
+  const totalItems = itemsToPaginate.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+    if (currentPage < 1) setCurrentPage(1);
+  }, [totalPages, currentPage]);
+
+  const pageItems = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return itemsToPaginate.slice(start, start + pageSize);
+  }, [itemsToPaginate, currentPage, pageSize]);
+
+  const formatTimeAgo = (date: Date | null) => {
+    if (!date) return 'Never';
+    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ago`;
   };
 
-  const renderWatchlist = () => (
-    <div className="space-y-2">
-      {data?.map((quote: StockQuote) => (
-        <div
-          key={quote.symbol}
-          className="flex justify-between items-center p-3 bg-gray-50 dark:bg-gray-800 rounded"
-        >
-          <div>
-            <div className="font-semibold">{quote.symbol}</div>
-            <div className="text-sm text-gray-500">${quote.price.toFixed(2)}</div>
-          </div>
-          <div
-            className={`text-right ${
-              quote.change >= 0 ? 'text-green-600' : 'text-red-600'
-            }`}
-          >
-            <div className="font-semibold">
-              {quote.change >= 0 ? '+' : ''}
-              {quote.change.toFixed(2)}
-            </div>
-            <div className="text-sm">
-              {quote.changePercent >= 0 ? '+' : ''}
-              {quote.changePercent.toFixed(2)}%
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-
-  const renderGainers = () => (
-    <div className="space-y-2">
-      {data?.slice(0, 5).map((stock: any, idx: number) => (
-        <div
-          key={idx}
-          className="flex justify-between items-center p-2 bg-green-50 dark:bg-green-900/20 rounded"
-        >
-          <div>
-            <div className="font-semibold">{stock.ticker}</div>
-            <div className="text-sm text-gray-500">${stock.price}</div>
-          </div>
-          <div className="text-green-600 font-semibold">
-            +{stock.change_percentage}%
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-
-  const renderPerformance = () => {
-    if (!data) return null;
-    const quote = data as StockQuote;
+  const renderFieldCard = (fieldPath: string) => {
+    const value = getValueByPath(data, fieldPath);
+    const displayValue =
+      value != null ? (typeof value === 'object' ? JSON.stringify(value) : String(value)) : 'N/A';
 
     return (
-      <div className="space-y-4">
-        <div className="text-center">
-          <div className="text-3xl font-bold">${quote.price.toFixed(2)}</div>
-          <div className="text-gray-500">{quote.symbol}</div>
+      <div 
+        key={fieldPath} 
+        className="rounded-lg p-4 border transition-colors"
+        style={{ 
+          backgroundColor: colors.bgSecondary,
+          borderColor: colors.border
+        }}
+      >
+        <div 
+          className="text-xs mb-2 font-medium uppercase tracking-wide"
+          style={{ color: colors.textTertiary }}
+        >
+          {fieldPath}
         </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded">
-            <div className="text-sm text-gray-500">Change</div>
-            <div
-              className={`font-semibold ${
-                quote.change >= 0 ? 'text-green-600' : 'text-red-600'
-              }`}
-            >
-              {quote.change >= 0 ? '+' : ''}
-              {quote.change.toFixed(2)}
-            </div>
-          </div>
-          <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded">
-            <div className="text-sm text-gray-500">Change %</div>
-            <div
-              className={`font-semibold ${
-                quote.changePercent >= 0 ? 'text-green-600' : 'text-red-600'
-              }`}
-            >
-              {quote.changePercent >= 0 ? '+' : ''}
-              {quote.changePercent.toFixed(2)}%
-            </div>
-          </div>
+        <div 
+          className="text-2xl font-bold break-all"
+          style={{ color: colors.textPrimary }}
+        >
+          {displayValue}
         </div>
+      </div>
+    );
+  };
+
+  const renderArrayItem = (item: any, idx: number) => {
+    if (fields.length === 0) {
+      return (
+        <div 
+          key={idx} 
+          className="rounded-lg p-4 border transition-colors"
+          style={{ 
+            backgroundColor: colors.bgSecondary,
+            borderColor: colors.border
+          }}
+        >
+          <pre 
+            className="text-sm whitespace-pre-wrap font-mono"
+            style={{ color: colors.textSecondary }}
+          >
+            {typeof item === 'object' ? JSON.stringify(item, null, 2) : String(item)}
+          </pre>
+        </div>
+      );
+    }
+
+    return (
+      <div key={idx} className="space-y-3">
+        {fields.map((fieldPath) => {
+          const value = getValueByPath(item, fieldPath);
+          const displayValue =
+            value != null ? (typeof value === 'object' ? JSON.stringify(value) : String(value)) : 'N/A';
+
+          return (
+            <div 
+              key={fieldPath} 
+              className="rounded-lg p-4 border transition-colors"
+              style={{ 
+                backgroundColor: colors.bgSecondary,
+                borderColor: colors.border
+              }}
+            >
+              <div 
+                className="text-xs mb-2 font-medium uppercase tracking-wide"
+                style={{ color: colors.textTertiary }}
+              >
+                {fieldPath}
+              </div>
+              <div 
+                className="text-2xl font-bold break-all"
+                style={{ color: colors.textPrimary }}
+              >
+                {displayValue}
+              </div>
+            </div>
+          );
+        })}
       </div>
     );
   };
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow-lg p-4">
-      <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold">{widget.title}</h3>
-        <div className="flex gap-2">
-          {onEdit && (
-            <button
-              onClick={onEdit}
-              className="text-blue-600 hover:text-blue-800"
-            >
-              ⚙️
-            </button>
-          )}
-          {onRemove && (
-            <button
-              onClick={onRemove}
-              className="text-red-600 hover:text-red-800"
-            >
-              ✕
-            </button>
-          )}
+    <div 
+      className="h-full flex flex-col rounded-xl shadow-2xl border transition-colors"
+      style={{ 
+        backgroundColor: colors.bgPrimary,
+        borderColor: colors.border
+      }}
+    >
+      <div 
+        className="flex justify-between items-center px-5 py-4 border-b"
+        style={{ borderColor: colors.border }}
+      >
+        <div>
+          <h3 className="text-lg font-bold truncate" style={{ color: colors.textPrimary }}>
+            {widget.title}
+          </h3>
+          <p className="text-xs mt-0.5" style={{ color: colors.textTertiary }}>
+            {paginateFields ? `${totalItems} fields` : isDataArray ? `${totalItems} items` : 'Data card'}
+          </p>
+        </div>
+        <div className="flex gap-2 items-center">
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            className="p-2 rounded-lg transition-all disabled:opacity-50 cursor-pointer"
+            style={{ color: colors.textSecondary }}
+            title="Refresh"
+          >
+            <svg className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+          <button
+            onClick={onEdit}
+            className="p-2 rounded-lg transition-all cursor-pointer"
+            style={{ color: colors.textSecondary }}
+            title="Edit"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </button>
+          <button
+            onClick={onRemove}
+            className="p-2 rounded-lg transition-all cursor-pointer"
+            style={{ color: colors.textSecondary }}
+            title="Delete"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto">
-        {loading && (
+      <div className="flex-1 overflow-auto p-5">
+        {loading && !data && (
           <div className="flex items-center justify-center h-full">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-teal-500"></div>
           </div>
         )}
 
         {error && (
           <div className="flex items-center justify-center h-full">
-            <div className="text-red-600 text-center">
-              <div className="text-4xl mb-2">⚠️</div>
-              <div>{error}</div>
+            <div className="text-center">
+              <svg className="w-16 h-16 mx-auto mb-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div className="text-red-400 text-sm mb-4">{error}</div>
               <button
                 onClick={fetchData}
-                className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-sm transition-colors"
               >
                 Retry
               </button>
@@ -195,19 +293,113 @@ export default function CardWidget({ widget, onRemove, onEdit }: CardWidgetProps
           </div>
         )}
 
-        {!loading && !error && data && (
-          <>
-            {widget.config.cardType === 'watchlist' && renderWatchlist()}
-            {widget.config.cardType === 'gainers' && renderGainers()}
-            {widget.config.cardType === 'performance' && renderPerformance()}
-          </>
+        {!error && data && (
+          <div className="space-y-4">
+            {paginateFields ? (
+              <div className="space-y-4">
+                {pageItems.map((fieldPath: string) => (
+                  <div key={fieldPath}>{renderFieldCard(fieldPath)}</div>
+                ))}
+              </div>
+            ) : isDataArray ? (
+              <div className="space-y-4">
+                {pageItems.map((item: any, idx: number) => (
+                  <div key={(item && item.id) || idx}>{renderArrayItem(item, idx)}</div>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {fields.length === 0 ? (
+                  <div className="text-center text-sm py-8" style={{ color: colors.textSecondary }}>
+                    No fields selected. Click settings to edit.
+                  </div>
+                ) : (
+                  fields.map((fieldPath) => {
+                    const value = getValueByPath(data, fieldPath);
+                    const displayValue =
+                      value != null ? (typeof value === 'object' ? JSON.stringify(value) : String(value)) : 'N/A';
+
+                    return (
+                      <div 
+                        key={fieldPath} 
+                        className="rounded-lg p-4 border transition-colors"
+                        style={{ 
+                          backgroundColor: colors.bgSecondary,
+                          borderColor: colors.border
+                        }}
+                      >
+                        <div 
+                          className="text-xs mb-2 font-medium uppercase tracking-wide"
+                          style={{ color: colors.textTertiary }}
+                        >
+                          {fieldPath}
+                        </div>
+                        <div 
+                          className="text-2xl font-bold break-all"
+                          style={{ color: colors.textPrimary }}
+                        >
+                          {displayValue}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         {!loading && !error && !data && (
-          <div className="flex items-center justify-center h-full text-gray-500">
+          <div className="flex items-center justify-center h-full text-sm" style={{ color: colors.textSecondary }}>
             No data available
           </div>
         )}
+      </div>
+
+      <div 
+        className="px-5 py-3 border-t transition-colors"
+        style={{ 
+          borderColor: colors.border,
+          backgroundColor: `${colors.bgSecondary}50`
+        }}
+      >
+        <div className="flex items-center justify-between text-sm">
+          <span style={{ color: colors.textSecondary }}>
+            Last updated: <span style={{ color: colors.textSecondary }}>{formatTimeAgo(lastUpdated)}</span>
+          </span>
+
+          {totalItems > 0 && totalPages > 1 && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1.5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors border cursor-pointer"
+                style={{ 
+                  backgroundColor: colors.bgSecondary,
+                  color: colors.textSecondary,
+                  borderColor: colors.border
+                }}
+              >
+                ← Prev
+              </button>
+              <span style={{ color: colors.textSecondary }}>
+                Page <span className="font-medium" style={{ color: colors.textPrimary }}>{currentPage}</span> of {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="px-3 py-1.5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors border cursor-pointer"
+                style={{ 
+                  backgroundColor: colors.bgSecondary,
+                  color: colors.textSecondary,
+                  borderColor: colors.border
+                }}
+              >
+                Next →
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
